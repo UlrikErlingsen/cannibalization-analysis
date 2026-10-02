@@ -35,11 +35,11 @@ def money(value: float, currency: str) -> str:
 def chart(fig, key: str, height: int = 380) -> None:
     fig.update_layout(height=height, margin=dict(l=15, r=20, t=35, b=25),
                       legend=dict(orientation="h", y=1.12, x=0), hovermode="closest")
-    st.plotly_chart(fig, use_container_width=True, key=k(key), config={"displaylogo": False})
+    st.plotly_chart(fig, width="stretch", key=k(key), config={"displaylogo": False})
 
 
 def table(frame: pd.DataFrame, **kwargs) -> None:
-    st.dataframe(frame, use_container_width=True, hide_index=True, **kwargs)
+    st.dataframe(frame, width="stretch", hide_index=True, **kwargs)
 
 
 def overview() -> None:
@@ -96,7 +96,7 @@ def _planner_inputs():
     st.caption(source)
     st.markdown("**Existing items** · overlap is your relative substitution weight: 0 excludes an item; "
                 "1 gives it the strongest weight. Allocation also accounts for current volume.")
-    edited = st.data_editor(original, num_rows="dynamic", use_container_width=True, hide_index=True,
+    edited = st.data_editor(original, num_rows="dynamic", width="stretch", hide_index=True,
                             key=k(f"portfolio_editor:{digest}"), column_config={
         "item": st.column_config.TextColumn("Item", required=True),
         "units": st.column_config.NumberColumn("Baseline units", min_value=0.0, required=True),
