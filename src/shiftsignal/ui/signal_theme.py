@@ -1,4 +1,4 @@
-# Standalone copy of the Signal suite theme, with a local Shift registration.
+# Synced from signal-hub/signal-theme/signal_theme.py. Edit it there, then run scripts/sync_theme.py.
 """Shared look for every *Signal app. One import replaces the pasted <style> block.
 
     import signal_theme as sig
@@ -52,9 +52,8 @@ FAMILIES = {
     "decide":   {"label": "Decide",   "200": "#daeaf7", "300": "#b9d9f1", "600": "#4f80a2", "700": "#326384", "800": "#134766"},
 }
 
-# key: (prefix, family, repo, tagline)
+# key: (prefix, family, repo, tagline). Generated from signal-hub/apps.yaml by scripts/sync_suite.py.
 APPS = {
-    "shift":      ("Shift", "decide", "cannibalization-analysis", "Is the launch growing the portfolio or moving demand around?"),
     "track":      ("Track", "brand", "brand-tracking", "Is the brand moving, or is the tracker just noisy?"),
     "position":   ("Position", "brand", "brand-positioning", "See where brands stand"),
     "prospect":   ("Prospect", "market", "b2b-prospecting", "Norwegian B2B prospecting from open Brønnøysund data"),
@@ -73,6 +72,7 @@ APPS = {
     "tag":        ("Tag", "research", "pricing-analysis", "What price range is supported, and how does profit move?"),
     "experiment": ("Experiment", "decide", "experiment-analysis", "Did the treatment cause a change worth acting on?"),
     "gate":       ("Gate", "decide", "launch-decision-gate", "Know when the evidence deserves the next investment"),
+    "shift":      ("Shift", "decide", "cannibalization-analysis", "New demand, or demand moved around?"),
     "alloc":      ("Alloc", "decide", "marketing-mix-allocation", "Put the next budget where it works hardest"),
 }
 
