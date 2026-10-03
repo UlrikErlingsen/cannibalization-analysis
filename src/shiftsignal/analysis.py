@@ -11,13 +11,15 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from shiftsignal import limits
+
 
 class DataProblem(ValueError):
     """An actionable input or study-design problem."""
 
 
-# Panels are date x location x item cells; every step below is vectorized or aggregates to location level first.
-MAX_ROWS = 5_000_000
+# Panels are date x location x item cells; every step below is vectorized or aggregates to location level first, so
+# there is no built-in row or item limit locally. A public demo applies the caps in shiftsignal.limits.
 # Bootstrap draws are computed in blocks: one block of location-resampling counts times the location arrays.
 _BOOTSTRAP_BLOCK = 250
 
@@ -55,8 +57,9 @@ def _labels(frame: pd.DataFrame, columns: list[str]) -> None:
 
 def validate_portfolio(frame: pd.DataFrame) -> pd.DataFrame:
     frame = _required(frame, ["item", "units", "price", "unit_cost", "overlap"])
-    if len(frame) > 100:
-        raise DataProblem("Use at most 100 incumbent items in one comparable choice set.")
+    item_cap = limits.max_items()
+    if item_cap is not None and len(frame) > item_cap:
+        raise DataProblem(limits.demo_limit(f"The public demo plans at most {item_cap} incumbent items."))
     _labels(frame, ["item"])
     _numbers(frame, ["units", "price", "unit_cost", "overlap"])
     if frame.item.duplicated().any():
@@ -165,10 +168,9 @@ def sensitivity_grid(portfolio: pd.DataFrame, launch: Launch) -> pd.DataFrame:
 
 def validate_panel(frame: pd.DataFrame, launch_date, new_item: str) -> tuple[pd.DataFrame, dict]:
     frame = _required(frame, ["date", "location", "group", "item", "units", "price", "unit_cost"])
-    if len(frame) > MAX_ROWS:
-        raise DataProblem(
-            f"Use at most {MAX_ROWS:,} rows per analysis. Aggregate to weekly periods or fewer items first."
-        )
+    row_cap = limits.max_rows()
+    if row_cap is not None and len(frame) > row_cap:
+        raise DataProblem(limits.demo_limit(f"The public demo analyses at most {row_cap:,} panel rows."))
     _labels(frame, ["location", "group", "item"])
     _numbers(frame, ["units", "price", "unit_cost"])
     # A panel repeats a few hundred dates millions of times: parse each distinct value once.
@@ -191,12 +193,18 @@ def validate_panel(frame: pd.DataFrame, launch_date, new_item: str) -> tuple[pd.
         raise DataProblem("Each location must stay in one group throughout the study.")
     cell_codes = [pd.factorize(frame[column])[0].astype(np.int64) for column in ["date", "location", "item"]]
     sizes = [int(codes.max()) + 1 for codes in cell_codes]
-    cell_key = (cell_codes[0] * sizes[1] + cell_codes[1]) * sizes[2] + cell_codes[2]
-    if pd.Series(cell_key).duplicated().any():
+    if sizes[0] * sizes[1] * sizes[2] < 2**62:
+        duplicated = pd.Series((cell_codes[0] * sizes[1] + cell_codes[1]) * sizes[2] + cell_codes[2]).duplicated()
+    else:  # astronomically sparse keys would overflow one int64 code
+        duplicated = pd.DataFrame(dict(zip("dli", cell_codes))).duplicated()
+    if duplicated.any():
         raise DataProblem("Duplicate date/location/item rows found. Aggregate transactions to one row per cell first.")
     item_names = sorted(frame.item.unique())
-    if not 2 <= len(item_names) <= 100 or new_item not in item_names:
-        raise DataProblem("Select one launch item and include between 1 and 99 incumbent items.")
+    if len(item_names) < 2 or new_item not in item_names:
+        raise DataProblem("Select one launch item and include at least one incumbent item.")
+    item_cap = limits.max_items()
+    if item_cap is not None and len(item_names) > item_cap:
+        raise DataProblem(limits.demo_limit(f"The public demo analyses at most {item_cap} items, including the launch item."))
     calendar = pd.DatetimeIndex(sorted(frame.date.unique()))
     gaps = np.diff(calendar.values).astype("timedelta64[D]").astype(int)
     if len(gaps) == 0 or len(set(gaps)) != 1 or gaps[0] not in (1, 7):
@@ -241,8 +249,11 @@ def analyze_launch(frame: pd.DataFrame, launch_date, new_item: str, *, launch_co
     """
     if not np.isfinite(launch_cost) or launch_cost < 0:
         raise DataProblem("Total launch cost must be finite and nonnegative.")
-    if not isinstance(iterations, int) or not 200 <= iterations <= 5000:
-        raise DataProblem("Use between 200 and 5,000 bootstrap draws.")
+    if not isinstance(iterations, int) or iterations < 200:
+        raise DataProblem("Use at least 200 bootstrap draws.")
+    draw_cap = limits.max_bootstrap_draws()
+    if draw_cap is not None and iterations > draw_cap:
+        raise DataProblem(limits.demo_limit(f"The public demo runs at most {draw_cap:,} bootstrap draws."))
     frame, audit = validate_panel(frame, launch_date, new_item)
     items = audit["items"]
     metrics = ["units", "revenue", "contribution"]

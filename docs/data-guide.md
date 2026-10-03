@@ -2,7 +2,7 @@
 
 Shift Signal reads two kinds of CSV file. Both downloads in the app's **Data guide** page are complete, fictional starting points: a portfolio template and a full launch panel.
 
-All CSV files must be UTF-8 (a byte-order mark is fine), have a header row, use a comma or semicolon delimiter and use decimal points. The upload limit is 1000 MB and 5,000,000 rows. Blank numbers are rejected rather than treated as zero.
+All CSV files must be UTF-8 (a byte-order mark is fine), have a header row, use a comma or semicolon delimiter and use decimal points. Run locally there is no built-in size, row or item limit (memory is the limit); the public demo allows 20 MB, 250,000 rows and 100 items. Blank numbers are rejected rather than treated as zero.
 
 ## Launch planner: one row per incumbent item
 
@@ -31,7 +31,7 @@ All numbers must be finite and nonnegative. The launch item itself (name, expect
 - `date`: `YYYY-MM-DD`, without a time. One complete daily or weekly calendar with equally spaced dates.
 - `location`: a stable identifier for an independent restaurant, store or other assignment unit.
 - `group`: exactly `test` or `control`, and constant for each location throughout the study.
-- `item`: the launch item and between 1 and 99 incumbent items.
+- `item`: the launch item and at least one incumbent item (the public demo allows 100 items in total).
 - `units`: finite, nonnegative sales volume. Use explicit zeros only for verified zero sales.
 - `price`, `unit_cost`: average realised price and variable cost per unit for that row, unit-weighted when you aggregate transactions. Zero-sales rows still need a finite price and cost.
 
@@ -45,7 +45,7 @@ The panel is rejected, with a message saying why, when:
 - a location switches group;
 - the launch item has sales before launch or in a control location, or no post-launch sales at all.
 
-The app also caps the analysis at 5,000,000 rows; aggregate daily data to weeks or drop unrelated items if a panel is larger. Every step aggregates to location level before the bootstrap, so large panels stay fast. It does not remove outliers or impute missing values.
+Every step aggregates to location level before the bootstrap, so panels with millions of rows stay fast; if memory runs short, aggregate daily data to weeks or drop unrelated items. It does not remove outliers or impute missing values.
 
 ## Before you upload
 

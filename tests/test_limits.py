@@ -1,4 +1,4 @@
-"""Large-data limits: the 1000 MB / 5,000,000-row caps, their messages, and the launchers that share them."""
+"""Data limits: none locally, demo caps only with SIGNAL_PUBLIC=1, plus the launchers' shared upload cap."""
 from io import BytesIO
 import hashlib
 import json
@@ -10,9 +10,11 @@ import pandas as pd
 import pytest
 
 import shiftsignal.io as shift_io
-from shiftsignal.analysis import MAX_ROWS, DataProblem, analyze_launch, validate_panel
+from shiftsignal import limits
+from shiftsignal.analysis import DataProblem, analyze_launch, validate_panel, validate_portfolio
 
 ROOT = Path(__file__).resolve().parents[1]
+STREAMLIT_UPLOAD_MB = 10000  # Streamlit's transport cap only; the app adds no data limit locally
 
 
 def wide_panel(locations_per_group: int, items: int = 10, periods: int = 8) -> pd.DataFrame:
@@ -28,51 +30,74 @@ def wide_panel(locations_per_group: int, items: int = 10, periods: int = 8) -> p
                          "units": units, "price": 10.0, "unit_cost": 4.0})
 
 
-def test_panels_above_the_old_250000_row_limit_are_analyzed():
-    frame = wide_panel(1_600)
-    assert len(frame) > 250_000
+def test_local_mode_accepts_input_beyond_every_demo_cap(monkeypatch):
+    monkeypatch.delenv("SIGNAL_PUBLIC", raising=False)
+    frame = wide_panel(1_600)  # more rows than the demo cap
+    assert len(frame) > limits.DEMO_MAX_ROWS
     loaded = shift_io.read_csv(frame.to_csv(index=False).encode())
     assert len(loaded) == len(frame)
-    _, audit = validate_panel(loaded, "2026-02-02", "New")
-    assert audit["test_locations"] == audit["control_locations"] == 1_600
     result = analyze_launch(loaded, "2026-02-02", "New", iterations=200)
     assert result["summary"]["new_item_units"]["estimate"] == pytest.approx(20.0 * 1_600 * 4)
-    assert MAX_ROWS == 5_000_000
-    assert shift_io.MAX_UPLOAD_BYTES == shift_io.MAX_UPLOAD_MB * 1024 * 1024 == 1000 * 1024 * 1024
+    many_items = wide_panel(4, items=limits.DEMO_MAX_ITEMS + 2)  # more items than the demo cap
+    _, audit = validate_panel(many_items, "2026-02-02", "New")
+    assert len(audit["items"]) == limits.DEMO_MAX_ITEMS + 2
+    draws = analyze_launch(wide_panel(4), "2026-02-02", "New", iterations=limits.DEMO_MAX_BOOTSTRAP_DRAWS + 1)
+    assert draws["config"]["iterations"] == limits.DEMO_MAX_BOOTSTRAP_DRAWS + 1
+    portfolio = pd.DataFrame({"item": [f"I{i}" for i in range(limits.DEMO_MAX_ITEMS + 1)], "units": 10.0,
+                              "price": 5.0, "unit_cost": 2.0, "overlap": 0.5})
+    assert len(validate_portfolio(portfolio)) == limits.DEMO_MAX_ITEMS + 1
+    assert limits.max_upload_bytes() is None and limits.max_rows() is None and limits.max_bootstrap_draws() is None
 
 
-def test_row_and_size_limits_name_the_new_caps(monkeypatch):
-    raw = wide_panel(4).to_csv(index=False).encode()
-    monkeypatch.setattr(shift_io, "MAX_ROWS", 100)
-    with pytest.raises(DataProblem, match="at most 100 rows per upload"):
-        shift_io.read_csv(raw)
-    monkeypatch.setattr(shift_io, "MAX_UPLOAD_BYTES", 10)
-    with pytest.raises(DataProblem, match="smaller than 1,000 MB"):
-        shift_io.read_csv(raw)
-
-
-def test_large_inputs_are_hashed_not_copied_into_the_evidence_pack(monkeypatch):
+def test_public_demo_enforces_its_caps_with_a_demo_message(monkeypatch):
+    monkeypatch.setenv("SIGNAL_PUBLIC", "1")
     frame = wide_panel(4)
-    result = analyze_launch(frame, "2026-02-02", "New", iterations=200)
+    raw = frame.to_csv(index=False).encode()
+    monkeypatch.setattr(limits, "DEMO_MAX_ROWS", 100)
+    with pytest.raises(DataProblem, match="at most 100 rows per upload.*downloadable Shift Signal app has no built-in"):
+        shift_io.read_csv(raw)
+    with pytest.raises(DataProblem, match="at most 100 panel rows.*public demo only"):
+        validate_panel(frame, "2026-02-02", "New")
+    monkeypatch.setattr(limits, "DEMO_MAX_ROWS", 250_000)
+    monkeypatch.setattr(limits, "DEMO_MAX_ITEMS", 5)
+    with pytest.raises(DataProblem, match="at most 5 items"):
+        validate_panel(frame, "2026-02-02", "New")
+    with pytest.raises(DataProblem, match="at most 5,000 bootstrap draws"):
+        analyze_launch(frame, "2026-02-02", "New", iterations=5_001)
+    monkeypatch.setattr(limits, "DEMO_MAX_UPLOAD_MB", 0)
+    with pytest.raises(DataProblem, match="CSV files up to 0 MB"):
+        shift_io.read_csv(raw)
+
+
+def test_running_out_of_memory_is_reported_plainly(monkeypatch):
+    def no_memory(*args, **kwargs):
+        raise MemoryError
+
+    monkeypatch.setattr(shift_io.pd, "read_csv", no_memory)
+    with pytest.raises(DataProblem, match="not enough memory on this computer"):
+        shift_io.read_csv(b"item,units\nA,1\n")
+
+
+def test_evidence_pack_holds_full_inputs_and_a_chunked_hash(monkeypatch):
+    frame = wide_panel(4)
+    frame.loc[0, "location"] = "=cmd"
+    result = analyze_launch(wide_panel(4), "2026-02-02", "New", iterations=200)
     expected = hashlib.sha256(frame.to_csv(index=False).encode()).hexdigest()
     monkeypatch.setattr(shift_io, "_HASH_CHUNK_ROWS", 37)
     assert shift_io.input_sha256(frame) == expected
-    monkeypatch.setattr(shift_io, "EVIDENCE_INPUT_MAX_ROWS", 10)
     with ZipFile(BytesIO(shift_io.evidence_pack("historical", frame, result, result["config"], "test"))) as archive:
         metadata = json.loads(archive.read("evidence.json"))
-        assert "inputs.csv" not in archive.namelist()
-        assert "items.csv" in archive.namelist()
-    assert metadata["input_sha256"] == expected
-    assert metadata["input_rows"] == len(frame)
-    assert "not copied into this pack" in metadata["inputs_note"]
+        exported = pd.read_csv(BytesIO(archive.read("inputs.csv")))
+    assert metadata["input_sha256"] == expected and metadata["input_rows"] == len(frame)
+    assert len(exported) == len(frame) and exported.loc[0, "location"] == "'=cmd"
 
 
-def test_launchers_docker_and_config_share_the_1000_mb_cap():
+def test_launchers_docker_and_config_share_the_suite_upload_cap():
     config = (ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
     windows = (ROOT / "run_app.bat").read_text(encoding="utf-8")
     macos = (ROOT / "run_app.command").read_text(encoding="utf-8")
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    cap = shift_io.MAX_UPLOAD_MB
+    cap = STREAMLIT_UPLOAD_MB
     assert f"maxUploadSize = {cap}" in config
     assert f"set SHIFTSIGNAL_MAX_UPLOAD_MB={cap}" in windows
     assert "--server.maxUploadSize=%SHIFTSIGNAL_MAX_UPLOAD_MB%" in windows

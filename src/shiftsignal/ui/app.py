@@ -10,7 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from shiftsignal import __version__
+from shiftsignal import __version__, limits
 from shiftsignal.analysis import DataProblem, Launch, analyze_launch, plan_launch, sensitivity_grid
 from shiftsignal.examples import historical_demo, portfolio_demo
 from shiftsignal.io import csv_bytes, evidence_pack, input_sha256, read_csv
@@ -67,10 +67,22 @@ def _loaded_panel(upload) -> dict:
     return cached
 
 
-def _cached_evidence_pack(data: pd.DataFrame, result: dict, config: dict, source: str, key: str) -> bytes:
+# Above this many input rows the evidence pack (which always holds the full input table) is built on request, so a
+# large panel does not spend tens of seconds serializing on every page view. It is a responsiveness choice, not a limit.
+LAZY_PACK_ROWS = 250_000
+# On-screen charts show at most this many items; tables and exports always hold every item.
+CHART_ITEMS = 40
+
+
+def _cached_evidence_pack(data: pd.DataFrame, result: dict, config: dict, source: str, key: str) -> bytes | None:
     """Build the evidence ZIP once per analysis and settings; hashing millions of input rows is not a per-rerun cost."""
     cached = st.session_state.get(k("history_pack"))
     if cached is None or cached[0] != key:
+        if len(data) > LAZY_PACK_ROWS and not st.button(
+            f"Prepare evidence pack · {len(data):,} input rows", key=k("prepare_history_pack"),
+            help="The pack includes the full input table, so preparing it takes a little while for a large panel.",
+        ):
+            return None
         marker = (id(data), len(data))
         digest = st.session_state.get(k("history_input_sha"))
         with st.spinner("Preparing the evidence pack…"):
@@ -186,10 +198,16 @@ def planner() -> None:
     left, right = st.columns(2)
     with left:
         st.markdown("**Source of launch volume**")
-        positive = items[items.displaced_units > 0]
-        labels = list(positive.item) + ["New to portfolio", launch.name]
-        values = list(positive.displaced_units) + [summary["incremental_units"]]
-        colors = [RUST] * len(positive) + [GREEN, BLUE]
+        positive = items[items.displaced_units > 0].sort_values("displaced_units", ascending=False, kind="stable")
+        shown = positive.head(CHART_ITEMS)
+        labels = list(shown.item)
+        values = list(shown.displaced_units)
+        if len(positive) > len(shown):
+            labels.append(f"{len(positive) - len(shown):,} other items")
+            values.append(float(positive.displaced_units.iloc[len(shown):].sum()))
+        colors = [RUST] * len(labels) + [GREEN, BLUE]
+        labels += ["New to portfolio", launch.name]
+        values += [summary["incremental_units"]]
         fig = go.Figure(go.Sankey(node=dict(label=labels, color=colors, pad=15, thickness=12),
                                  link=dict(source=list(range(len(values))), target=[len(labels) - 1] * len(values),
                                            value=values, color="rgba(79,128,162,0.25)")))
@@ -329,18 +347,28 @@ def evidence() -> None:
     with right:
         st.markdown("**Estimated item effects · units**")
         item_plot = result["items"].copy()
-        # The percentile interval need not straddle the point estimate. Draw endpoints directly.
+        if len(item_plot) > CHART_ITEMS:
+            ranked = item_plot.assign(size=item_plot.units_estimate.abs(), incumbent=item_plot.role.ne("launch"))
+            ranked = ranked.sort_values(["incumbent", "size"], ascending=[True, False], kind="stable")
+            item_plot = ranked.head(CHART_ITEMS).drop(columns=["size", "incumbent"])
+        # The percentile interval need not straddle the point estimate. Draw endpoints directly, as one trace of
+        # segments separated by gaps, so many items stay light in the browser.
         fig = go.Figure()
-        for _, row in item_plot.iterrows():
-            fig.add_trace(go.Scatter(x=[row.units_low, row.units_high], y=[row["item"], row["item"]],
-                                    mode="lines", line=dict(color="#a19786", width=3), showlegend=False,
-                                    hovertemplate="95% endpoint: %{x:,.0f}<extra></extra>"))
+        segments_x, segments_y = [], []
+        for low, high, name in zip(item_plot.units_low, item_plot.units_high, item_plot["item"]):
+            segments_x += [low, high, None]
+            segments_y += [name, name, None]
+        fig.add_trace(go.Scatter(x=segments_x, y=segments_y, mode="lines", line=dict(color="#a19786", width=3),
+                                 showlegend=False, hovertemplate="95% endpoint: %{x:,.0f}<extra></extra>"))
         fig.add_trace(go.Scatter(x=item_plot.units_estimate, y=item_plot.item, mode="markers", showlegend=False,
                                 marker=dict(color=[BLUE if v == "launch" else RUST for v in item_plot.role], size=10),
                                 hovertemplate="%{y}: %{x:,.0f} units<extra></extra>"))
         fig.add_vline(x=0, line_color="#645c50", line_dash="dot")
         fig.update_xaxes(title="Effect across all test locations / post periods")
         chart(fig, "item_effects")
+        if len(item_plot) < len(result["items"]):
+            st.caption(f"Chart shows the launch item and the {len(item_plot) - 1} incumbents with the largest unit effects "
+                       f"of {len(result['items']):,} items; the full table below and the evidence pack include every item.")
     st.caption("Item intervals are exploratory and are not corrected for multiple comparisons. "
                "Portfolio intervals preserve correlations across items by resampling whole locations.")
     with st.expander("Study diagnostics and uncertainty", expanded=True):
@@ -360,10 +388,11 @@ def evidence() -> None:
         st.caption("Item contribution effects exclude the overall fixed launch cost, which is deducted once in the portfolio metric.")
     config = {**result["config"], "currency": currency, "evidence_tier": "historical group comparison"}
     pack_key = json.dumps([st.session_state.get(k("history_signature")), config, source], default=str)
-    st.download_button("Download launch evidence pack", _cached_evidence_pack(data, result, config, source, pack_key),
-                       "shift-launch-evidence.zip", "application/zip", key=k("history_export"))
-    st.caption("ZIP includes the loaded input data (up to 250,000 rows; larger inputs are identified by their SHA-256), "
-               "estimates, diagnostics, assumptions and references.")
+    pack = _cached_evidence_pack(data, result, config, source, pack_key)
+    if pack is not None:
+        st.download_button("Download launch evidence pack", pack,
+                           "shift-launch-evidence.zip", "application/zip", key=k("history_export"))
+    st.caption("ZIP includes the loaded input data, estimates, diagnostics, assumptions and references.")
 
 
 def data_guide() -> None:
@@ -399,7 +428,8 @@ def data_guide() -> None:
                 "6. Aggregate transactions using unit-weighted prices and costs. Use a finite price and cost even for zero-sales rows.")
     sig.note("info", "**Only one location or ordinary sales history?** You can use the planner, but the historical "
              "route needs a credible comparison group. Staggered launches, changing assortments and basket effects require a different study design.")
-    st.caption("CSV: UTF-8, comma or semicolon delimited, decimal points. Limits: 1000 MB, 5,000,000 rows, 100 items. "
+    st.caption("CSV: UTF-8, comma or semicolon delimited, decimal points. No built-in size, row or item limit locally; "
+               "the public demo allows 20 MB, 250,000 rows and 100 items. "
                "Uploaded rows stay in the running app; there is no external analytics API or automatic persistence.")
 
 
@@ -460,4 +490,6 @@ def render() -> None:
         PAGES[page]()
     except (DataProblem, pd.errors.ParserError) as exc:
         st.error(str(exc))
+    except MemoryError:
+        st.error(limits.MEMORY_MESSAGE)
     sig.footer(NS, __version__, "portfolio effects, with assumptions in view")

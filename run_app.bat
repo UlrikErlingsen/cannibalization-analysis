@@ -22,7 +22,7 @@ if errorlevel 1 (
 )
 if not defined ARROW_DEFAULT_MEMORY_POOL set ARROW_DEFAULT_MEMORY_POOL=system
 if "%SHIFTSIGNAL_PORT%"=="" set SHIFTSIGNAL_PORT=8596
-if "%SHIFTSIGNAL_MAX_UPLOAD_MB%"=="" set SHIFTSIGNAL_MAX_UPLOAD_MB=1000
+if "%SHIFTSIGNAL_MAX_UPLOAD_MB%"=="" set SHIFTSIGNAL_MAX_UPLOAD_MB=10000
 echo Starting Shift Signal at http://127.0.0.1:%SHIFTSIGNAL_PORT% ...
 ".venv\Scripts\python.exe" -m streamlit run app.py --server.headless=true --server.address=127.0.0.1 --server.port=%SHIFTSIGNAL_PORT% --server.maxUploadSize=%SHIFTSIGNAL_MAX_UPLOAD_MB% --server.fileWatcherType=none --browser.gatherUsageStats=false
 if errorlevel 1 pause
