@@ -2,6 +2,23 @@
 
 All notable changes to Shift Signal are documented here.
 
+## [1.1.0] - 2026-10-03
+
+Larger datasets for large retailers and restaurant groups. Methods, estimates and the evidence-pack schema are unchanged; on both fictional demos every estimate and interval is identical to 1.0.0.
+
+### Changed
+
+- Larger datasets: uploads up to 1000 MB (was 20 MB) and panels up to 5,000,000 date × location × item rows (was 250,000). One `MAX_ROWS` constant serves the reader and the panel validation, and `MAX_UPLOAD_MB` drives the in-code byte check; `.streamlit/config.toml`, both launchers and the Docker image default to the same 1000 MB.
+- CSV files are read with pandas' fast C parser after sniffing the delimiter from the header line (comma and semicolon files read as before), and parsing stops one row past the row limit. A 5,000,000-row, 250 MB panel reads in about 2 s.
+- Panel validation parses each distinct date and cleans each distinct label once, and checks duplicate cells on integer codes; the period series no longer copies the whole panel. The location bootstrap computes blocks of draws as resampling counts times the location-level arrays (same draws, same seed), so thousands of locations stay fast. A 5,000,000-row analysis with 1,000 locations, 50 items and 2,000 draws takes about 8 s at about 1.7 GB peak memory.
+- Evidence packs copy `inputs.csv` up to 250,000 rows. A larger input is not copied: `evidence.json` records `input_rows`, an `inputs_note` and the SHA-256 of the loaded table (computed in chunks; same definition as before), so the pack stays small.
+- The app parses an uploaded panel once and reuses it across reruns (it was re-read and re-serialized on every widget change), and builds the evidence pack once per analysis and settings.
+- `run_app.bat` and `run_app.command` honor `SHIFTSIGNAL_MAX_UPLOAD_MB` (default 1000); the Dockerfile sets `STREAMLIT_SERVER_MAX_UPLOAD_SIZE=1000`.
+
+### Suite
+
+- Suite: Rival, Reach, Learn and Blueprint Signal added to the suite table.
+
 ## [1.0.0] - 2026-10-03
 
 First public release.

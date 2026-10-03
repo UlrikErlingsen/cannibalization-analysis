@@ -36,7 +36,7 @@ Multiply by (test locations × post periods) to report a total effect over the t
 
 **Net displacement.** `−Σ Δ_i` over incumbents, in units. The net displacement rate divides it by the launch item's estimated units (its untreated sales are structurally zero in this design). Gains and losses among incumbents offset, so the rate can be below 0% (an estimated halo) or above 100% (wider decline or confounding). It is not clipped and is not an observed switching fraction.
 
-**Uncertainty: location bootstrap.** 2,000 draws by default (200 to 5,000 allowed) with a fixed seed (20261002). Each draw resamples whole locations with replacement within each group, keeping every period and item of a location together, which respects serial correlation within locations (Bertrand, Duflo and Mullainathan, 2004). Intervals are 95% percentile intervals. The rate interval is withheld when more than 5% of draws have no positive launch volume.
+**Uncertainty: location bootstrap.** 2,000 draws by default (200 to 5,000 allowed) with a fixed seed (20261002). Each draw resamples whole locations with replacement within each group, keeping every period and item of a location together, which respects serial correlation within locations (Bertrand, Duflo and Mullainathan, 2004). The bootstrap works on location-level arrays (one row per location), never on the raw panel rows, so its cost depends on the number of locations and items, not on the number of periods; blocks of draws are computed as resampling counts times those arrays, which gives the same draws as averaging the resampled locations one draw at a time. Intervals are 95% percentile intervals. The rate interval is withheld when more than 5% of draws have no positive launch volume.
 
 **Diagnostic: split-pre placebo.** The pre-launch period is split into an early and a late half. For incumbents only, the late-minus-early change in units per location-period is compared between test and control, with its own bootstrap interval. An interval that excludes zero means the groups were already drifting apart before launch. An interval that includes zero does not prove parallel trends.
 
@@ -46,4 +46,4 @@ Multiply by (test locations × post periods) to report a total effect over the t
 
 ## Evidence pack
 
-Each route exports a ZIP with `evidence.json` (version, settings, input SHA-256, summary, warnings, audit, placebo, sources and limits), `inputs.csv` and the result tables. Text that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with an apostrophe in exported CSV files.
+Each route exports a ZIP with `evidence.json` (version, settings, input SHA-256, summary, warnings, audit, placebo, sources and limits), `inputs.csv` (up to 250,000 rows; a larger input is identified by its SHA-256, row count and an `inputs_note` instead of being copied) and the result tables. Text that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with an apostrophe in exported CSV files.

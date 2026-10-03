@@ -16,6 +16,12 @@ class DataProblem(ValueError):
     """An actionable input or study-design problem."""
 
 
+# Panels are date x location x item cells; every step below is vectorized or aggregates to location level first.
+MAX_ROWS = 5_000_000
+# Bootstrap draws are computed in blocks: one block of location-resampling counts times the location arrays.
+_BOOTSTRAP_BLOCK = 250
+
+
 def _required(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         raise DataProblem("Add at least one data row.")
@@ -39,8 +45,11 @@ def _labels(frame: pd.DataFrame, columns: list[str]) -> None:
     for column in columns:
         if frame[column].isna().any():
             raise DataProblem(f"{column}: missing labels are not allowed.")
-        frame[column] = frame[column].astype(str).str.strip()
-        if frame[column].eq("").any():
+        # Clean each distinct label once; rows share the cleaned strings instead of millions of new copies.
+        codes, uniques = pd.factorize(frame[column])
+        cleaned = pd.Index(uniques).astype(str).str.strip()
+        frame[column] = cleaned.take(codes).to_numpy(dtype=object)
+        if (cleaned == "").any():
             raise DataProblem(f"{column}: blank labels are not allowed.")
 
 
@@ -156,14 +165,20 @@ def sensitivity_grid(portfolio: pd.DataFrame, launch: Launch) -> pd.DataFrame:
 
 def validate_panel(frame: pd.DataFrame, launch_date, new_item: str) -> tuple[pd.DataFrame, dict]:
     frame = _required(frame, ["date", "location", "group", "item", "units", "price", "unit_cost"])
-    if len(frame) > 250_000:
-        raise DataProblem("Use at most 250,000 rows per analysis.")
+    if len(frame) > MAX_ROWS:
+        raise DataProblem(
+            f"Use at most {MAX_ROWS:,} rows per analysis. Aggregate to weekly periods or fewer items first."
+        )
     _labels(frame, ["location", "group", "item"])
     _numbers(frame, ["units", "price", "unit_cost"])
-    dates = pd.to_datetime(frame.date, errors="coerce", utc=True)
+    # A panel repeats a few hundred dates millions of times: parse each distinct value once.
+    date_codes, date_values = pd.factorize(frame.date, use_na_sentinel=True)
+    if (date_codes < 0).any():
+        raise DataProblem("date must contain valid dates without times, for example 2026-05-04.")
+    dates = pd.Series(pd.to_datetime(pd.Series(date_values), errors="coerce", utc=True))
     if dates.isna().any() or (dates != dates.dt.normalize()).any():
         raise DataProblem("date must contain valid dates without times, for example 2026-05-04.")
-    frame["date"] = dates.dt.tz_localize(None)
+    frame["date"] = pd.DatetimeIndex(dates.dt.tz_localize(None)).take(date_codes)
     try:
         boundary = pd.Timestamp(launch_date)
         if pd.isna(boundary) or boundary.tzinfo is not None or boundary != boundary.normalize():
@@ -174,7 +189,10 @@ def validate_panel(frame: pd.DataFrame, launch_date, new_item: str) -> tuple[pd.
         raise DataProblem("group must contain exactly 'test' and 'control'.")
     if frame.groupby("location").group.nunique().max() != 1:
         raise DataProblem("Each location must stay in one group throughout the study.")
-    if frame.duplicated(["date", "location", "item"]).any():
+    cell_codes = [pd.factorize(frame[column])[0].astype(np.int64) for column in ["date", "location", "item"]]
+    sizes = [int(codes.max()) + 1 for codes in cell_codes]
+    cell_key = (cell_codes[0] * sizes[1] + cell_codes[1]) * sizes[2] + cell_codes[2]
+    if pd.Series(cell_key).duplicated().any():
         raise DataProblem("Duplicate date/location/item rows found. Aggregate transactions to one row per cell first.")
     item_names = sorted(frame.item.unique())
     if not 2 <= len(item_names) <= 100 or new_item not in item_names:
@@ -246,10 +264,18 @@ def analyze_launch(frame: pd.DataFrame, launch_date, new_item: str, *, launch_co
     scale = audit["test_locations"] * audit["post_periods"]
     rng = np.random.default_rng(seed)
     draws = np.empty((iterations, len(items), 3))
-    for b in range(iterations):
-        ti = rng.integers(0, len(dt), len(dt))
-        ci = rng.integers(0, len(dc), len(dc))
-        draws[b] = dt[ti].mean(axis=0) - dc[ci].mean(axis=0)
+    # Same resampled locations as drawing dt[ti].mean(axis=0) per iteration, but each block of draws becomes
+    # one matrix product of resampling counts with the location arrays, so thousands of locations stay fast.
+    flat_t, flat_c = dt.reshape(len(dt), -1), dc.reshape(len(dc), -1)
+    for start in range(0, iterations, _BOOTSTRAP_BLOCK):
+        stop = min(start + _BOOTSTRAP_BLOCK, iterations)
+        counts_t = np.empty((stop - start, len(dt)))
+        counts_c = np.empty((stop - start, len(dc)))
+        for row in range(stop - start):
+            counts_t[row] = np.bincount(rng.integers(0, len(dt), len(dt)), minlength=len(dt))
+            counts_c[row] = np.bincount(rng.integers(0, len(dc), len(dc)), minlength=len(dc))
+        block = counts_t @ flat_t / len(dt) - counts_c @ flat_c / len(dc)
+        draws[start:stop] = block.reshape(stop - start, len(items), 3)
 
     def interval(estimate, values):
         lo, hi = np.quantile(values, [0.025, 0.975])
@@ -312,9 +338,12 @@ def analyze_launch(frame: pd.DataFrame, launch_date, new_item: str, *, launch_co
         warnings.append("Net displacement exceeds new-item volume. This can reflect wider decline or confounding; it is not a valid customer-switching fraction.")
     if valid.mean() < 0.95:
         warnings.append("Too many bootstrap samples have zero launch volume. The rate interval is withheld; use the unit effects.")
-    period_series = frame.assign(incumbent_units=np.where(frame.item.eq(new_item), 0, frame.units)).groupby(
-        ["date", "group"]
-    )[["units", "incumbent_units", "revenue", "contribution"]].sum().reset_index()
+    # Only the five columns the series needs, rather than a copy of the whole panel.
+    period_series = pd.DataFrame({
+        "date": frame.date, "group": frame.group, "units": frame.units,
+        "incumbent_units": np.where(frame.item.eq(new_item), 0, frame.units),
+        "revenue": frame.revenue, "contribution": frame.contribution,
+    }).groupby(["date", "group"])[["units", "incumbent_units", "revenue", "contribution"]].sum().reset_index()
     for group, count in [("test", len(dt)), ("control", len(dc))]:
         mask = period_series.group.eq(group)
         period_series.loc[mask, ["units", "incumbent_units", "revenue", "contribution"]] /= count

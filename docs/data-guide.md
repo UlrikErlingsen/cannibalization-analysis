@@ -2,7 +2,7 @@
 
 Shift Signal reads two kinds of CSV file. Both downloads in the app's **Data guide** page are complete, fictional starting points: a portfolio template and a full launch panel.
 
-All CSV files must be UTF-8 (a byte-order mark is fine), have a header row, use a comma or semicolon delimiter and use decimal points. The upload limit is 20 MB and 250,000 rows. Blank numbers are rejected rather than treated as zero.
+All CSV files must be UTF-8 (a byte-order mark is fine), have a header row, use a comma or semicolon delimiter and use decimal points. The upload limit is 1000 MB and 5,000,000 rows. Blank numbers are rejected rather than treated as zero.
 
 ## Launch planner: one row per incumbent item
 
@@ -45,7 +45,7 @@ The panel is rejected, with a message saying why, when:
 - a location switches group;
 - the launch item has sales before launch or in a control location, or no post-launch sales at all.
 
-The app also caps the analysis at 250,000 rows. It does not remove outliers or impute missing values.
+The app also caps the analysis at 5,000,000 rows; aggregate daily data to weeks or drop unrelated items if a panel is larger. Every step aggregates to location level before the bootstrap, so large panels stay fast. It does not remove outliers or impute missing values.
 
 ## Before you upload
 

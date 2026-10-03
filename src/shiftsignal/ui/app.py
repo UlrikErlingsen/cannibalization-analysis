@@ -13,7 +13,7 @@ import streamlit as st
 from shiftsignal import __version__
 from shiftsignal.analysis import DataProblem, Launch, analyze_launch, plan_launch, sensitivity_grid
 from shiftsignal.examples import historical_demo, portfolio_demo
-from shiftsignal.io import csv_bytes, evidence_pack, read_csv
+from shiftsignal.io import csv_bytes, evidence_pack, input_sha256, read_csv
 from shiftsignal.research import LIMITS, SOURCES
 from shiftsignal.ui import signal_theme as sig
 
@@ -40,6 +40,46 @@ def chart(fig, key: str, height: int = 380) -> None:
 
 def table(frame: pd.DataFrame, **kwargs) -> None:
     st.dataframe(frame, width="stretch", hide_index=True, **kwargs)
+
+
+def _loaded_panel(upload) -> dict:
+    """Parse an uploaded panel once per file; reruns reuse the parsed table, digest, items and dates."""
+    identity = (upload.name, int(getattr(upload, "size", 0)), str(getattr(upload, "file_id", "")))
+    cached = st.session_state.get(k("history_upload_cache"))
+    if cached is not None and cached["identity"] == identity:
+        return cached
+    st.session_state.pop(k("history_upload_cache"), None)
+    raw = upload.getvalue()
+    with st.spinner("Reading the panel…"):
+        data = read_csv(raw)
+    if not {"item", "date"}.issubset(data.columns):
+        raise DataProblem("The panel CSV needs item and date columns. Open the Data guide for the complete schema.")
+    choices = sorted(str(value) for value in pd.unique(data.item.dropna()))
+    if not choices:
+        raise DataProblem("No item names found in the uploaded panel.")
+    distinct_dates = pd.Series(pd.unique(data.date.dropna()))
+    valid_dates = pd.to_datetime(distinct_dates, errors="coerce", utc=True).dropna().dt.tz_localize(None).sort_values().unique()
+    if not len(valid_dates):
+        raise DataProblem("No valid dates found. Use YYYY-MM-DD dates.")
+    cached = {"identity": identity, "data": data, "digest": hashlib.sha256(raw).hexdigest(), "choices": choices,
+              "default_item": choices[-1], "default_date": str(pd.Timestamp(valid_dates[len(valid_dates) // 2]).date())}
+    st.session_state[k("history_upload_cache")] = cached
+    return cached
+
+
+def _cached_evidence_pack(data: pd.DataFrame, result: dict, config: dict, source: str, key: str) -> bytes:
+    """Build the evidence ZIP once per analysis and settings; hashing millions of input rows is not a per-rerun cost."""
+    cached = st.session_state.get(k("history_pack"))
+    if cached is None or cached[0] != key:
+        marker = (id(data), len(data))
+        digest = st.session_state.get(k("history_input_sha"))
+        with st.spinner("Preparing the evidence pack…"):
+            if digest is None or digest[0] != marker:
+                digest = (marker, input_sha256(data))
+                st.session_state[k("history_input_sha")] = digest
+            cached = (key, evidence_pack("historical launch", data, result, config, source, input_digest=digest[1]))
+        st.session_state[k("history_pack")] = cached
+    return cached[1]
 
 
 def overview() -> None:
@@ -201,21 +241,14 @@ def _historical_inputs():
         if upload is None:
             st.info("Upload a panel CSV or switch back to the fictional demo. The Data guide explains the schema.")
             return None
-        data = read_csv(upload.getvalue())
+        loaded = _loaded_panel(upload)
+        data, digest, choices = loaded["data"], loaded["digest"], loaded["choices"]
+        default_item, default_date = loaded["default_item"], loaded["default_date"]
         source = f"Uploaded panel: {upload.name}"
-        if not {"item", "date"}.issubset(data.columns):
-            raise DataProblem("The panel CSV needs item and date columns. Open the Data guide for the complete schema.")
+    else:
+        digest = hashlib.sha256(csv_bytes(data)).hexdigest()
         choices = sorted(data.item.dropna().astype(str).unique())
-        if not choices:
-            raise DataProblem("No item names found in the uploaded panel.")
-        default_item = choices[-1]
-        valid_dates = pd.to_datetime(data.date, errors="coerce", utc=True).dropna().dt.tz_localize(None).sort_values().unique()
-        if not len(valid_dates):
-            raise DataProblem("No valid dates found. Use YYYY-MM-DD dates.")
-        default_date = str(pd.Timestamp(valid_dates[len(valid_dates) // 2]).date())
     st.caption(source)
-    digest = hashlib.sha256(csv_bytes(data)).hexdigest()
-    choices = sorted(data.item.dropna().astype(str).unique())
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     with c1:
         new_item = st.selectbox("Launch item", choices, index=choices.index(default_item), key=k(f"launch_item:{digest}"))
@@ -326,9 +359,11 @@ def evidence() -> None:
         table(result["items"].round(2))
         st.caption("Item contribution effects exclude the overall fixed launch cost, which is deducted once in the portfolio metric.")
     config = {**result["config"], "currency": currency, "evidence_tier": "historical group comparison"}
-    st.download_button("Download launch evidence pack", evidence_pack("historical launch", data, result, config, source),
+    pack_key = json.dumps([st.session_state.get(k("history_signature")), config, source], default=str)
+    st.download_button("Download launch evidence pack", _cached_evidence_pack(data, result, config, source, pack_key),
                        "shift-launch-evidence.zip", "application/zip", key=k("history_export"))
-    st.caption("ZIP includes the loaded input data, estimates, diagnostics, assumptions and references.")
+    st.caption("ZIP includes the loaded input data (up to 250,000 rows; larger inputs are identified by their SHA-256), "
+               "estimates, diagnostics, assumptions and references.")
 
 
 def data_guide() -> None:
@@ -364,7 +399,7 @@ def data_guide() -> None:
                 "6. Aggregate transactions using unit-weighted prices and costs. Use a finite price and cost even for zero-sales rows.")
     sig.note("info", "**Only one location or ordinary sales history?** You can use the planner, but the historical "
              "route needs a credible comparison group. Staggered launches, changing assortments and basket effects require a different study design.")
-    st.caption("CSV: UTF-8, comma or semicolon delimited, decimal points. Limits: 20 MB, 250,000 rows, 100 items. "
+    st.caption("CSV: UTF-8, comma or semicolon delimited, decimal points. Limits: 1000 MB, 5,000,000 rows, 100 items. "
                "Uploaded rows stay in the running app; there is no external analytics API or automatic persistence.")
 
 

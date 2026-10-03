@@ -51,7 +51,7 @@ The demo is deterministic synthetic data, generated with a known 60% (menu) or 7
 
 ## Data contract
 
-Two UTF-8 CSV formats, comma or semicolon delimited, with decimal points. Limits: 20 MB, 250,000 rows, 100 items. Blanks are rejected, never read as zero. Templates for both are on the **Data guide** page.
+Two UTF-8 CSV formats, comma or semicolon delimited, with decimal points. Limits: 1000 MB and 5,000,000 rows (date × location × item cells) locally, 100 items. Blanks are rejected, never read as zero. Templates for both are on the **Data guide** page.
 
 **Launch planner:** one row per incumbent item in one comparable choice set. The launch itself is entered in the app.
 
@@ -102,11 +102,11 @@ The design warnings above sit beside every reading and are not overridden by a p
 Each route downloads a ZIP evidence pack:
 
 - `evidence.json`: app and version, analysis type, the source label (fictional demo or uploaded filename), every setting (launch inputs, currency, period, launch date, cost, bootstrap draws, seed, method), the SHA-256 fingerprint of the input table, the summary estimates, warnings, panel audit and placebo, and the research sources and limits;
-- `inputs.csv`: the portfolio or panel exactly as analysed, including in-app table edits;
+- `inputs.csv`: the portfolio or panel exactly as analysed, including in-app table edits, up to 250,000 rows. A larger panel is not copied into the pack; `evidence.json` then records `input_rows`, an `inputs_note` and the input SHA-256, so keep the source file with the pack;
 - `items.csv`: item-level displacement (planner) or item effects with intervals and counterfactual totals (evidence);
 - `sensitivity.csv` (planner) or `series.csv` and `descriptive.csv` (evidence): the sensitivity grid, the per-location average series by group, and descriptive location-period statistics.
 
-The pack contains your full input rows, so treat it like the source data. Exported CSV text that begins with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with an apostrophe against spreadsheet-formula interpretation. The Data guide and Research pages also offer the CSV templates and the source list as JSON.
+Up to 250,000 rows the pack contains your full input rows, so treat it like the source data. Exported CSV text that begins with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with an apostrophe against spreadsheet-formula interpretation. The Data guide and Research pages also offer the CSV templates and the source list as JSON.
 
 ## Run locally
 
@@ -123,7 +123,7 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Then open the local address shown in the terminal. Shift Signal prefers local port 8596; the macOS launcher falls back to another free port if it is taken. Both launchers accept `SHIFTSIGNAL_PORT`, and the macOS launcher also accepts `SHIFTSIGNAL_NO_BROWSER=1`. Uploads are capped at 20 MB.
+Then open the local address shown in the terminal. Shift Signal prefers local port 8596; the macOS launcher falls back to another free port if it is taken. Both launchers accept `SHIFTSIGNAL_PORT` and `SHIFTSIGNAL_MAX_UPLOAD_MB` (the upload limit in MB, default 1000), and the macOS launcher also accepts `SHIFTSIGNAL_NO_BROWSER=1`. The app itself never accepts more than 1000 MB, so the variable can lower the limit but not raise it. A 5,000,000-row panel (about 250 MB) reads in about 2 seconds and analyses in about 8 seconds with roughly 1.7 GB of peak memory on a desktop machine.
 
 ### Docker
 
@@ -132,7 +132,7 @@ docker build -t shiftsignal .
 docker run --rm -p 8596:8596 shiftsignal
 ```
 
-Then open http://127.0.0.1:8596. The container runs as a non-root user.
+Then open http://127.0.0.1:8596. The container runs as a non-root user. The image sets `STREAMLIT_SERVER_MAX_UPLOAD_SIZE=1000`; pass `-e STREAMLIT_SERVER_MAX_UPLOAD_SIZE=200` (or any smaller value) to `docker run` to lower the upload limit for a hosted copy.
 
 ## Privacy
 
